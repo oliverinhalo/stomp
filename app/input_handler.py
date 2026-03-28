@@ -1,3 +1,5 @@
+import glob
+import logging
 import time
 import threading
 
@@ -13,11 +15,14 @@ EVT_ZOOM_IN       = "zoom_in"
 EVT_PAGE_PREV     = "page_prev"
 EVT_PAGE_NEXT     = "page_next"
 EVT_UNLOCK        = "unlock"
+EVT_LOCK          = "lock"
 
 LONG_PRESS_THRESHOLD = 0.8   # seconds
 SIMULTANEOUS_WINDOW  = 0.25  # seconds for multi-pedal detection
 TRIPLE_TAP_WINDOW   = 0.5   # seconds for triple middle detection
 
+
+logger = logging.getLogger(__name__)
 
 class InputHandler:
     """
@@ -25,7 +30,7 @@ class InputHandler:
     Fires callbacks for: left, right, middle, middle_long, space, unlock.
     """
 
-    def __init__(self, pin_left=17, pin_middle=27, pin_right=22, use_gpio=True):
+    def __init__(self, pin_left=17, pin_middle=27, pin_right=22, use_gpio=True, use_serial=False, serial_port="/dev/ttyACM0"):
         self.callbacks = {}
         self._press_times = {}
         self._held = {}
@@ -36,7 +41,14 @@ class InputHandler:
         self._simultaneous_suppressed = set()
         self._middle_taps = []
         self._middle_timer = None
+        self._serial_port = serial_port
+        self._ser = None
+        self._serial_thread = None
+        self._serial_lock = threading.Lock()
 
+        if use_serial:
+            self._start_serial(serial_port)
+            logger.info("Serial input enabled, starting serial thread")
         if use_gpio:
             self._init_gpio(pin_left, pin_middle, pin_right)
 
@@ -60,7 +72,7 @@ class InputHandler:
             self._btns[EVT_MIDDLE].when_held     = self._on_middle_held
 
         except Exception as e:
-            print(f"[Input] GPIO init failed: {e} — keyboard only mode")
+            logger.warning("GPIO init failed: %s — keyboard only mode", e)
             self._use_gpio = False
 
     def _on_press(self, name):
@@ -77,6 +89,12 @@ class InputHandler:
             active = {k for k, v in self._held.items() if v}
 
         if self._simultaneous_fired:
+            return
+
+        if active == {EVT_LEFT, EVT_RIGHT, EVT_MIDDLE}:
+            self._simultaneous_fired = True
+            self._simultaneous_suppressed = set(active)
+            self._fire(EVT_LOCK)
             return
 
         if active == {EVT_LEFT, EVT_RIGHT}:
@@ -96,11 +114,6 @@ class InputHandler:
             self._simultaneous_suppressed = set(active)
             self._fire(EVT_ZOOM_IN)
             return
-
-        if len(active) >= 2:
-            self._simultaneous_fired = True
-            self._simultaneous_suppressed = set(active)
-            self._fire(EVT_UNLOCK)
 
     def _on_release(self, name):
         with self._lock:
@@ -174,3 +187,90 @@ class InputHandler:
         root.bind("<u>",     lambda e: self._fire(EVT_UNLOCK))
         root.bind("<Up>",    lambda e: self._fire(EVT_LEFT))
         root.bind("<Down>",  lambda e: self._fire(EVT_RIGHT))
+
+
+    def _find_serial_ports(self):
+        candidates = []
+        if self._serial_port:
+            candidates.append(self._serial_port)
+        candidates.extend(sorted(glob.glob("/dev/ttyACM*")))
+        candidates.extend(sorted(glob.glob("/dev/ttyUSB*")))
+        ports = [p for i, p in enumerate(candidates) if p not in candidates[:i]]
+        logger.debug("Serial port candidates: %s", ports)
+        return ports
+
+    def _open_serial(self, port):
+        import serial
+
+        try:
+            ser = serial.Serial(port, 115200, timeout=1)
+            with self._serial_lock:
+                self._ser = ser
+            logger.info("Serial connected on %s", port)
+            return True
+        except Exception as e:
+            logger.warning("Serial failed on %s: %s", port, e)
+            return False
+
+    def _close_serial(self):
+        with self._serial_lock:
+            if getattr(self, '_ser', None):
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
+                self._ser = None
+
+    def _start_serial(self, port):
+        self._serial_port = port
+        self._serial_thread = threading.Thread(target=self._serial_loop, daemon=True)
+        self._serial_thread.start()
+
+    def _serial_loop(self):
+        last_state = (0, 0, 0)
+
+        while True:
+            if self._ser is None:
+                for port in self._find_serial_ports():
+                    if self._open_serial(port):
+                        break
+                if self._ser is None:
+                    time.sleep(2)
+                    continue
+
+            try:
+                with self._serial_lock:
+                    ser = self._ser
+                if ser is None:
+                    continue
+
+                line = ser.readline().decode(errors='ignore').strip()
+                if not line:
+                    continue
+
+                parts = line.split(",")
+                if len(parts) != 3:
+                    continue
+
+                state = tuple(int(x) for x in parts)
+
+                # Map to events
+                mapping = [EVT_LEFT, EVT_MIDDLE, EVT_RIGHT]
+
+                for i, (prev, curr) in enumerate(zip(last_state, state)):
+                    name = mapping[i]
+                    if curr == 1 and prev == 0:
+                        self._on_press(name)
+                    elif curr == 0 and prev == 1:
+                        self._on_release(name)
+
+                last_state = state
+
+            except Exception as e:
+                logger.exception("Serial loop error")
+                self._close_serial()
+                last_state = (0, 0, 0)
+                time.sleep(1)
+                self._close_serial()
+                last_state = (0, 0, 0)
+                time.sleep(1)

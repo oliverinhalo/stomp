@@ -1,6 +1,7 @@
 import os
 os.environ["DISPLAY"] = ":0"
 
+import logging
 import customtkinter as ctk
 import threading
 
@@ -17,9 +18,12 @@ from app.input_handler import (
     EVT_PAGE_PREV,
     EVT_PAGE_NEXT,
     EVT_UNLOCK,
+    EVT_LOCK,
 )
 from app.keyboard_widget import PedalKeyboard
 from app import storage, scraper
+
+logger = logging.getLogger(__name__)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -62,21 +66,25 @@ class StompApp(ctk.CTk):
 
         self.screen       = STATE_STANDBY
         self._sel_index  = 0
-        self._list_data  = []          # generic list for any list screen
-        self._ug_results = []
-        self._current_song   = None    # {folder, name, versions, favourite}
-        self._current_tab    = ""      # full tab text
-        self._tab_lines      = []
-        self._tab_page       = 0
-        self._zoom_level     = 3
-        self._font_size      = self._font_for_zoom(self._zoom_level)
-        self._lines_per_page = self._lines_for_zoom(self._zoom_level)
+        self._list_data       = []          # generic list for any list screen
+        self._list_page       = 0
+        self._list_page_size  = 8
+        self._ug_results      = []
+        self._current_song    = None    # {folder, name, versions, favourite}
+        self._current_tab     = ""      # full tab text
+        self._tab_lines       = []
+        self._tab_page        = 0
+        self._zoom_level      = 3
+        self._font_size       = self._font_for_zoom(self._zoom_level)
+        self._lines_per_page  = self._lines_for_zoom(self._zoom_level)
         self._global_default_zoom = storage.load_config().get("default_zoom", 3)
-        self._edit_items     = ["✏️  Rename", "🗑️  Delete", "⭐  Toggle Favourite", "← Back"]
-        self._status_msg     = ""
+        self._previous_screen = None
+        self._edit_items      = ["✏️  Rename", "🗑️  Delete", "⭐  Toggle Favourite", "← Back"]
+        self._status_msg      = ""
 
         # Input
-        self._input = InputHandler(use_gpio=use_gpio)
+        self._input = InputHandler(use_gpio=use_gpio, use_serial=True)
+        logger.info("Input handler initialized (use_gpio=%s)", use_gpio)
         self._input.on(EVT_LEFT,          self._on_left)
         self._input.on(EVT_RIGHT,         self._on_right)
         self._input.on(EVT_MIDDLE,        self._on_middle)
@@ -88,6 +96,7 @@ class StompApp(ctk.CTk):
         self._input.on(EVT_PAGE_PREV,     self._on_page_prev)
         self._input.on(EVT_PAGE_NEXT,     self._on_page_next)
         self._input.on(EVT_UNLOCK,        self._on_unlock)
+        self._input.on(EVT_LOCK,          self._on_lock)
         self._input.bind_keyboard(self)
 
         # Main content area
@@ -103,6 +112,7 @@ class StompApp(ctk.CTk):
         self.after(100, lambda: self.attributes("-fullscreen", True))
         self._render_standby()
         self.bind("<Escape>", self._handle_escape)
+        logger.info("StompApp UI rendered and fullscreen enabled")
 
     # ── Screen clearing ───────────────────────────────────────────────────────
     def _clear(self):
@@ -152,6 +162,14 @@ class StompApp(ctk.CTk):
             self._sel_index = 0
             self._render_menu()
 
+    def _on_lock(self):
+        self.after(0, self._handle_lock)
+
+    def _handle_lock(self):
+        if self.screen == STATE_MENU:
+            self.screen = STATE_STANDBY
+            self._render_standby()
+
     def _handle_escape(self, event=None):
         if self.screen == STATE_STANDBY:
             return
@@ -169,6 +187,7 @@ class StompApp(ctk.CTk):
         elif s in (STATE_UG_RESULTS, STATE_VIEW_ALL, STATE_UG_VERSIONS,
                    STATE_EDIT_MENU, STATE_LOCAL_RESULTS):
             self._sel_index = max(0, self._sel_index - 1)
+            self._ensure_list_page_for_selection()
             self._render_list_screen()
         elif s == STATE_SONG_VIEW:
             self._page_prev()
@@ -189,6 +208,7 @@ class StompApp(ctk.CTk):
         elif s in (STATE_UG_RESULTS, STATE_VIEW_ALL, STATE_UG_VERSIONS,
                    STATE_EDIT_MENU, STATE_LOCAL_RESULTS):
             self._sel_index = min(len(self._list_data) - 1, self._sel_index + 1)
+            self._ensure_list_page_for_selection()
             self._render_list_screen()
         elif s == STATE_SONG_VIEW:
             self._page_next()
@@ -211,6 +231,25 @@ class StompApp(ctk.CTk):
             self._kb_widget.pedal_select()
         elif s == STATE_SONG_VIEW:
             self._page_next()
+
+    def _handle_page_prev(self):
+        if self.screen == STATE_SONG_VIEW:
+            self._page_prev()
+        elif self.screen in (STATE_UG_RESULTS, STATE_VIEW_ALL, STATE_UG_VERSIONS,
+                             STATE_EDIT_MENU, STATE_LOCAL_RESULTS):
+            self._list_page = max(0, self._list_page - 1)
+            self._sel_index = min(len(self._list_data) - 1, self._list_page * self._list_page_size)
+            self._render_list_screen()
+
+    def _handle_page_next(self):
+        if self.screen == STATE_SONG_VIEW:
+            self._page_next()
+        elif self.screen in (STATE_UG_RESULTS, STATE_VIEW_ALL, STATE_UG_VERSIONS,
+                             STATE_EDIT_MENU, STATE_LOCAL_RESULTS):
+            max_page = max(0, (len(self._list_data) - 1) // self._list_page_size)
+            self._list_page = min(max_page, self._list_page + 1)
+            self._sel_index = min(len(self._list_data) - 1, self._list_page * self._list_page_size)
+            self._render_list_screen()
 
     def _handle_middle_triple(self):
         s = self.screen
@@ -241,23 +280,24 @@ class StompApp(ctk.CTk):
         if self.screen in (STATE_ADD_SONG, STATE_SEARCH_LOCAL, STATE_RENAME):
             self._kb_widget.type_char(' ')
 
-    def _handle_page_prev(self):
-        if self.screen == STATE_SONG_VIEW:
-            self._page_prev()
-
-    def _handle_page_next(self):
-        if self.screen == STATE_SONG_VIEW:
-            self._page_next()
-
     def _handle_zoom_in(self):
         if self.screen == STATE_SONG_VIEW:
-            self._set_zoom_level(min(5, self._zoom_level + 1))
+            self._set_zoom_level(min(8, self._zoom_level + 1))
             self._render_song_view()
 
     def _handle_zoom_out(self):
         if self.screen == STATE_SONG_VIEW:
-            self._set_zoom_level(max(1, self._zoom_level - 1))
+            self._set_zoom_level(max(0, self._zoom_level - 1))
             self._render_song_view()
+
+    def _ensure_list_page_for_selection(self):
+        if not self._list_data:
+            self._sel_index = 0
+            self._list_page = 0
+            return
+        self._sel_index = min(self._sel_index, len(self._list_data) - 1)
+        max_page = max(0, (len(self._list_data) - 1) // self._list_page_size)
+        self._list_page = min(max_page, self._sel_index // self._list_page_size)
 
     def _zoom_in(self):
         if self.screen != STATE_SONG_VIEW:
@@ -272,50 +312,71 @@ class StompApp(ctk.CTk):
         self._render_song_view()
 
     def _adjust_default_zoom(self, delta):
-        self._global_default_zoom = min(5, max(1, self._global_default_zoom + delta))
+        self._global_default_zoom = min(8, max(0, self._global_default_zoom + delta))
         storage.save_config({"default_zoom": self._global_default_zoom})
         self._set_status(f"Default zoom set to {self._global_default_zoom}")
         if self.screen == STATE_SETTINGS:
             self._render_settings_screen()
 
+    def _compute_lines_per_page(self):
+        self.update_idletasks()
+        total_height = max(0, self.winfo_height())
+        header_height = 56
+        footer_height = 40
+        padding = 24
+        line_height = max(12, int(self._font_size * 1.4))
+        available = max(1, total_height - header_height - footer_height - padding)
+        return max(4, available // line_height)
+
     def _page_prev(self):
-        max_page = max(0, (len(self._tab_lines) - 1) // self._lines_per_page)
+        lpp = self._compute_lines_per_page()
+        max_page = max(0, (len(self._tab_lines) - 1) // lpp)
         self._tab_page = max(0, self._tab_page - 1)
         self._render_song_view()
 
     def _page_next(self):
-        max_page = max(0, (len(self._tab_lines) - 1) // self._lines_per_page)
+        lpp = self._compute_lines_per_page()
+        max_page = max(0, (len(self._tab_lines) - 1) // lpp)
         self._tab_page = min(max_page, self._tab_page + 1)
         self._render_song_view()
 
     def _handle_middle_long(self):
         s = self.screen
         if s == STATE_SONG_VIEW:
-            self._go_view_all()
+            self._go_back()
+        elif s in (STATE_ADD_SONG, STATE_SEARCH_LOCAL, STATE_RENAME):
+            self.screen = STATE_MENU
+            self._render_menu()
         elif s in (STATE_EDIT_MENU, STATE_UG_RESULTS, STATE_UG_VERSIONS,
-                   STATE_LOCAL_RESULTS):
+                   STATE_LOCAL_RESULTS, STATE_SETTINGS):
             self._go_back()
         elif s == STATE_MENU:
             self.screen = STATE_STANDBY
             self._render_standby()
 
     def _lines_for_zoom(self, level):
-        return {
-            1: 80,
-            2: 62,
-            3: 48,
-            4: 36,
-            5: 28,
-        }.get(level, 48)
+        if level <= 0:
+            return 96
+        if level == 1:
+            return 80
+        if level == 2:
+            return 62
+        if level == 3:
+            return 48
+        if level == 4:
+            return 36
+        if level == 5:
+            return 28
+        if level == 6:
+            return 22
+        if level == 7:
+            return 18
+        if level >= 8:
+            return 14
+        return 48
 
     def _font_for_zoom(self, level):
-        return {
-            1: 12,
-            2: 14,
-            3: 16,
-            4: 18,
-            5: 20,
-        }.get(level, 16)
+        return max(10, 10 + 2 * level)
 
     def _set_zoom_level(self, level):
         self._zoom_level = level
@@ -336,7 +397,6 @@ class StompApp(ctk.CTk):
             self._zoom_level = meta.get("zoom_level", self._global_default_zoom)
         else:
             self._zoom_level = self._global_default_zoom
-        self._lines_per_page = self._lines_for_zoom(self._zoom_level)
         self._font_size = self._font_for_zoom(self._zoom_level)
 
     def _save_current_song(self):
@@ -366,6 +426,16 @@ class StompApp(ctk.CTk):
     # ── Navigation helpers ────────────────────────────────────────────────────
     def _go_back(self):
         s = self.screen
+        if s == STATE_SONG_VIEW and self._previous_screen:
+            self.screen = self._previous_screen
+            if self.screen in (STATE_VIEW_ALL, STATE_UG_RESULTS, STATE_UG_VERSIONS, STATE_LOCAL_RESULTS):
+                self._render_list_screen()
+            elif self.screen == STATE_SEARCH_LOCAL:
+                self._render_search_local()
+            else:
+                self._render_menu()
+            return
+
         if s in (STATE_UG_RESULTS, STATE_ADD_SONG):
             self.screen = STATE_MENU
             self._render_menu()
@@ -387,12 +457,13 @@ class StompApp(ctk.CTk):
         self._render_keyboard_screen(
             prompt="Search Ultimate Guitar:",
             on_confirm=self._search_ug,
-            on_cancel=lambda: (setattr(self, 'state', STATE_MENU), self._render_menu())
+            on_cancel=lambda: (setattr(self, 'screen', STATE_MENU), self._render_menu())
         )
 
     def _go_view_all(self):
         self.screen = STATE_VIEW_ALL
         self._sel_index = 0
+        self._list_page = 0
         songs = storage.get_all_songs()
         self._list_data = songs
         self._render_list_screen()
@@ -404,6 +475,7 @@ class StompApp(ctk.CTk):
     def _go_edit_menu(self):
         self.screen = STATE_EDIT_MENU
         self._sel_index = 0
+        self._list_page = 0
         if not self._current_song.get("folder"):
             self._edit_items = [
                 "💾  Save",
@@ -480,6 +552,7 @@ class StompApp(ctk.CTk):
             return
 
         self._ug_results = results
+        self._list_page = 0
         self._list_data  = [f"{r['artist']} — {r['song']}  [{r['type']}]" for r in results]
         self.screen = STATE_UG_RESULTS
         self._sel_index = 0
@@ -545,6 +618,7 @@ class StompApp(ctk.CTk):
             self._set_status("No versions downloaded.")
             return
         content = storage.load_song_version(song["folder"], versions[0])
+        self._previous_screen = self.screen
         self._load_current_song(song, content)
         self.screen = STATE_SONG_VIEW
         self._render_song_view()
@@ -555,11 +629,12 @@ class StompApp(ctk.CTk):
         self._render_keyboard_screen(
             prompt="Search your songs:",
             on_confirm=self._do_local_search,
-            on_cancel=lambda: (setattr(self, 'state', STATE_MENU), self._render_menu())
+            on_cancel=lambda: (setattr(self, 'screen', STATE_MENU), self._render_menu())
         )
 
     def _do_local_search(self, query):
         results = storage.search_local(query)
+        self._list_page = 0
         self._list_data = results
         self.screen = STATE_LOCAL_RESULTS
         self._sel_index = 0
@@ -575,6 +650,7 @@ class StompApp(ctk.CTk):
             self._set_status("No versions downloaded.")
             return
         content = storage.load_song_version(song["folder"], versions[0])
+        self._previous_screen = self.screen
         self._load_current_song(song, content)
         self.screen = STATE_SONG_VIEW
         self._render_song_view()
@@ -669,9 +745,9 @@ class StompApp(ctk.CTk):
             )
             btn.pack(pady=8)
 
-        ctk.CTkLabel(f, text="◀ / ▶ navigate   |   middle triple = select   |   hold middle = lock",
+        ctk.CTkLabel(f, text="◀ / ▶ navigate   |   middle triple = select   |   hold all 3 = lock",
                      font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(24, 0))
-        self._render_footer("◀ / ▶ move   |   middle triple = select   |   hold middle = lock")
+        self._render_footer("◀ / ▶ move   |   middle triple = select   |   hold all 3 = lock")
 
     def _menu_select(self, idx):
         self._sel_index = idx
@@ -694,38 +770,43 @@ class StompApp(ctk.CTk):
         # Header
         hdr = ctk.CTkFrame(self._content, height=60, corner_radius=0, fg_color="#1a1a1a")
         hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text=title, font=ctk.CTkFont(size=24, weight="bold")).pack(
-            side="left", padx=20, pady=10)
-        ctk.CTkLabel(hdr, text="◀ / ▶ scroll   middle triple = select   |   hold middle = back",
-                     font=ctk.CTkFont(size=12), text_color="gray").pack(side="right", padx=20)
-        self._render_footer("◀ / ▶ scroll   |   middle triple = select   |   hold middle = back")
+        self._ensure_list_page_for_selection()
+        max_page = max(0, (len(self._list_data) - 1) // self._list_page_size)
+        self._list_page = min(self._list_page, max_page)
+        start = self._list_page * self._list_page_size
+        end = start + self._list_page_size
+        page_items = self._list_data[start:end]
 
-        # List
-        scroll = ctk.CTkScrollableFrame(self._content)
-        scroll.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(hdr, text=f"Page {self._list_page + 1} / {max_page + 1}",
+                     font=ctk.CTkFont(size=14), text_color="gray").pack(side="right", padx=20)
+        self._render_footer("◀ / ▶ select   |   middle triple = open   |   hold middle = back")
 
-        data = self._list_data
-        if not data:
-            ctk.CTkLabel(scroll, text="No items found.", font=ctk.CTkFont(size=18),
+        if not page_items:
+            empty_frame = ctk.CTkFrame(self._content, fg_color="transparent")
+            empty_frame.pack(fill="both", expand=True, padx=16, pady=16)
+            ctk.CTkLabel(empty_frame, text="No items found.", font=ctk.CTkFont(size=18),
                          text_color="gray").pack(pady=40)
             return
 
-        for i, item in enumerate(data):
-            selected = i == self._sel_index
+        container = ctk.CTkFrame(self._content, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=16, pady=16)
 
-            # Build display text
+        for idx, item in enumerate(page_items):
+            global_index = start + idx
+            selected = global_index == self._sel_index
+
             if isinstance(item, dict):
                 fav = "★ " if item.get("favourite") else ""
                 text = f"{fav}{item.get('name', item.get('folder', '?'))}"
-                sub  = f"{len(item.get('versions', []))} version(s)"
+                sub = f"{len(item.get('versions', []))} version(s)"
             else:
                 text = str(item)
-                sub  = ""
+                sub = ""
 
-            row = ctk.CTkFrame(scroll, corner_radius=10,
+            row = ctk.CTkFrame(container, corner_radius=10,
                                fg_color=("#1e4d7a" if selected else ("gray20", "gray15")))
             row.pack(fill="x", pady=4)
-            row.bind("<Button-1>", lambda e, x=i: self._list_click(x))
+            row.bind("<Button-1>", lambda e, x=global_index: self._list_click(x))
 
             ctk.CTkLabel(row, text=text,
                          font=ctk.CTkFont(size=17, weight="bold" if selected else "normal"),
@@ -738,9 +819,6 @@ class StompApp(ctk.CTk):
             if selected:
                 row.after(10, lambda r=row: r.tk.call('update', 'idletasks'))
 
-        # Scroll selected into view roughly
-        scroll.after(50, lambda: None)
-
     def _list_click(self, idx):
         self._sel_index = idx
         self._handle_middle()
@@ -750,7 +828,7 @@ class StompApp(ctk.CTk):
         song = self._current_song
         lines = self._tab_lines
         page  = self._tab_page
-        lpp   = self._lines_per_page
+        lpp   = self._compute_lines_per_page()
         total_pages = max(1, (len(lines) + lpp - 1) // lpp)
 
         # Header
@@ -766,11 +844,16 @@ class StompApp(ctk.CTk):
         # Tab content
         start = page * lpp
         visible = "\n".join(lines[start:start + lpp])
-        txt = ctk.CTkTextbox(self._content, font=ctk.CTkFont(size=self._font_size, family="Courier"),
-                             wrap="none", state="normal")
-        txt.pack(fill="both", expand=True, padx=10, pady=10)
-        txt.insert("end", visible)
-        txt.configure(state="disabled")
+        content_frame = ctk.CTkFrame(self._content, fg_color="#0f0f0f")
+        content_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        content_label = ctk.CTkLabel(
+            content_frame,
+            text=visible,
+            font=ctk.CTkFont(size=self._font_size, family="Courier"),
+            justify="left",
+            anchor="nw"
+        )
+        content_label.pack(fill="both", expand=True)
 
         # Footer
         ftr = ctk.CTkFrame(self._content, height=40, corner_radius=0, fg_color="#111")
