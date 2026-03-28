@@ -100,7 +100,7 @@ class InputHandler:
         if active == {EVT_LEFT, EVT_RIGHT}:
             self._simultaneous_fired = True
             self._simultaneous_suppressed = set(active)
-            self._fire(EVT_SPACE)
+            self._fire(EVT_UNLOCK)
             return
 
         if active == {EVT_LEFT, EVT_MIDDLE}:

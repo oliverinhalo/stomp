@@ -713,11 +713,11 @@ class StompApp(ctk.CTk):
 
         ctk.CTkFrame(f, height=2, fg_color="gray30").pack(fill="x", pady=24)
 
-        ctk.CTkLabel(f, text="Press two pedals (including middle) to unlock",
+        ctk.CTkLabel(f, text="Press left + right pedals together to unlock",
                      font=ctk.CTkFont(size=18), text_color="#888").pack()
         ctk.CTkLabel(f, text="(or press  U  on keyboard)",
                      font=ctk.CTkFont(size=13), text_color="#555").pack(pady=4)
-        self._render_footer("U = unlock | press two pedals (including middle) to unlock")
+        self._render_footer("U = unlock | left + right = unlock")
 
     def _render_footer(self, text):
         footer = ctk.CTkFrame(self._content, height=40, corner_radius=0, fg_color="#111")
