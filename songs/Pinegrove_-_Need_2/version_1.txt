@@ -1,0 +1,32 @@
+[Chords]
+Amaj9b5  546444
+Emaj7    076444
+
+[Intro]
+(fade in)
+Amaj9b5
+Emaj7    Amaj9b5    Emaj7
+
+[Verse]
+Amaj9b5           Emaj7
+          I'm out
+                        Amaj9b5
+There's nothing here to care about
+Emaj7                    Amaj9b5
+        What's that sound
+                  Emaj7
+What's that song about
+                       Amaj9b5
+It's nothing worth me sayin' aloud
+Emaj7                    Amaj9b5
+       So then why do I seem to
+ Emaj7
+Need to?
+               Amaj9b5
+Then why do I seem to
+ Emaj7
+Need to?
+
+[Outro]
+Amaj9b5    Emaj7    x6
+(fade out)
