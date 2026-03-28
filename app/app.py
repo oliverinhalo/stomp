@@ -101,7 +101,6 @@ class StompApp(ctk.CTk):
                      height=24).pack(side="bottom", fill="x", padx=10)
 
         self.after(100, lambda: self.attributes("-fullscreen", True))
-        self.after(200, lambda: self.state("zoomed"))
         self._render_standby()
         self.bind("<Escape>", self._handle_escape)
 
