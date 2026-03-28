@@ -2,17 +2,21 @@ import time
 import threading
 
 # Input event constants
-EVT_LEFT        = "left"
-EVT_RIGHT       = "right"
-EVT_MIDDLE      = "middle"
-EVT_MIDDLE_LONG = "middle_long"
-EVT_SPACE       = "space"
-EVT_PAGE_PREV   = "page_prev"
-EVT_PAGE_NEXT   = "page_next"
-EVT_UNLOCK      = "unlock"
+EVT_LEFT          = "left"
+EVT_RIGHT         = "right"
+EVT_MIDDLE        = "middle"
+EVT_MIDDLE_LONG   = "middle_long"
+EVT_MIDDLE_TRIPLE = "middle_triple"
+EVT_SPACE         = "space"
+EVT_ZOOM_OUT      = "zoom_out"
+EVT_ZOOM_IN       = "zoom_in"
+EVT_PAGE_PREV     = "page_prev"
+EVT_PAGE_NEXT     = "page_next"
+EVT_UNLOCK        = "unlock"
 
 LONG_PRESS_THRESHOLD = 0.8   # seconds
 SIMULTANEOUS_WINDOW  = 0.25  # seconds for multi-pedal detection
+TRIPLE_TAP_WINDOW   = 0.5   # seconds for triple middle detection
 
 
 class InputHandler:
@@ -30,6 +34,8 @@ class InputHandler:
         self._running = False
         self._simultaneous_fired = False
         self._simultaneous_suppressed = set()
+        self._middle_taps = []
+        self._middle_timer = None
 
         if use_gpio:
             self._init_gpio(pin_left, pin_middle, pin_right)
@@ -82,13 +88,13 @@ class InputHandler:
         if active == {EVT_LEFT, EVT_MIDDLE}:
             self._simultaneous_fired = True
             self._simultaneous_suppressed = set(active)
-            self._fire(EVT_PAGE_PREV)
+            self._fire(EVT_ZOOM_OUT)
             return
 
         if active == {EVT_RIGHT, EVT_MIDDLE}:
             self._simultaneous_fired = True
             self._simultaneous_suppressed = set(active)
-            self._fire(EVT_PAGE_NEXT)
+            self._fire(EVT_ZOOM_IN)
             return
 
         if len(active) >= 2:
@@ -111,13 +117,45 @@ class InputHandler:
             return
 
         duration = time.time() - press_time
+        if name == EVT_MIDDLE and duration < LONG_PRESS_THRESHOLD:
+            now = time.time()
+            self._middle_taps.append(now)
+            self._middle_taps = [t for t in self._middle_taps if now - t < TRIPLE_TAP_WINDOW]
+            if len(self._middle_taps) >= 3:
+                self._middle_taps.clear()
+                if self._middle_timer:
+                    self._middle_timer.cancel()
+                    self._middle_timer = None
+                self._fire(EVT_MIDDLE_TRIPLE)
+                return
+
+            if self._middle_timer:
+                self._middle_timer.cancel()
+            self._middle_timer = threading.Timer(TRIPLE_TAP_WINDOW, self._flush_middle_tap)
+            self._middle_timer.start()
+            return
+
         if name != EVT_MIDDLE and duration < LONG_PRESS_THRESHOLD:
             self._fire(name)
-        elif name == EVT_MIDDLE and duration < LONG_PRESS_THRESHOLD:
-            self._fire(EVT_MIDDLE)
+        elif name == EVT_MIDDLE and duration >= LONG_PRESS_THRESHOLD:
+            self._flush_middle_tap(cancel=True)
+            self._fire(EVT_MIDDLE_LONG)
 
     def _on_middle_held(self):
+        self._flush_middle_tap(cancel=True)
         self._fire(EVT_MIDDLE_LONG)
+
+    def _flush_middle_tap(self, cancel=False):
+        with self._lock:
+            if self._middle_timer:
+                self._middle_timer.cancel()
+                self._middle_timer = None
+            if cancel:
+                self._middle_taps.clear()
+                return
+            if self._middle_taps:
+                self._middle_taps.clear()
+                self._fire(EVT_MIDDLE)
 
     def _fire(self, event):
         cb = self.callbacks.get(event)

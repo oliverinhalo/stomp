@@ -10,7 +10,10 @@ from app.input_handler import (
     EVT_RIGHT,
     EVT_MIDDLE,
     EVT_MIDDLE_LONG,
+    EVT_MIDDLE_TRIPLE,
     EVT_SPACE,
+    EVT_ZOOM_OUT,
+    EVT_ZOOM_IN,
     EVT_PAGE_PREV,
     EVT_PAGE_NEXT,
     EVT_UNLOCK,
@@ -74,14 +77,17 @@ class StompApp(ctk.CTk):
 
         # Input
         self._input = InputHandler(use_gpio=use_gpio)
-        self._input.on(EVT_LEFT,        self._on_left)
-        self._input.on(EVT_RIGHT,       self._on_right)
-        self._input.on(EVT_MIDDLE,      self._on_middle)
-        self._input.on(EVT_MIDDLE_LONG, self._on_middle_long)
-        self._input.on(EVT_SPACE,       self._on_space)
-        self._input.on(EVT_PAGE_PREV,   self._on_page_prev)
-        self._input.on(EVT_PAGE_NEXT,   self._on_page_next)
-        self._input.on(EVT_UNLOCK,      self._on_unlock)
+        self._input.on(EVT_LEFT,          self._on_left)
+        self._input.on(EVT_RIGHT,         self._on_right)
+        self._input.on(EVT_MIDDLE,        self._on_middle)
+        self._input.on(EVT_MIDDLE_LONG,   self._on_middle_long)
+        self._input.on(EVT_MIDDLE_TRIPLE, self._on_middle_triple)
+        self._input.on(EVT_SPACE,         self._on_space)
+        self._input.on(EVT_ZOOM_OUT,      self._on_zoom_out)
+        self._input.on(EVT_ZOOM_IN,       self._on_zoom_in)
+        self._input.on(EVT_PAGE_PREV,     self._on_page_prev)
+        self._input.on(EVT_PAGE_NEXT,     self._on_page_next)
+        self._input.on(EVT_UNLOCK,        self._on_unlock)
         self._input.bind_keyboard(self)
 
         # Main content area
@@ -120,6 +126,15 @@ class StompApp(ctk.CTk):
     def _on_middle_long(self):
         self.after(0, self._handle_middle_long)
 
+    def _on_middle_triple(self):
+        self.after(0, self._handle_middle_triple)
+
+    def _on_zoom_out(self):
+        self.after(0, self._handle_zoom_out)
+
+    def _on_zoom_in(self):
+        self.after(0, self._handle_zoom_in)
+
     def _on_space(self):
         self.after(0, self._handle_space)
 
@@ -157,7 +172,7 @@ class StompApp(ctk.CTk):
             self._sel_index = max(0, self._sel_index - 1)
             self._render_list_screen()
         elif s == STATE_SONG_VIEW:
-            self._zoom_out()
+            self._page_prev()
         elif s == STATE_SETTINGS:
             self._adjust_default_zoom(-1)
         elif s == STATE_ADD_SONG:
@@ -177,7 +192,7 @@ class StompApp(ctk.CTk):
             self._sel_index = min(len(self._list_data) - 1, self._sel_index + 1)
             self._render_list_screen()
         elif s == STATE_SONG_VIEW:
-            self._zoom_in()
+            self._page_next()
         elif s == STATE_SETTINGS:
             self._adjust_default_zoom(1)
         elif s == STATE_ADD_SONG:
@@ -188,6 +203,17 @@ class StompApp(ctk.CTk):
             self._kb_widget.pedal_right()
 
     def _handle_middle(self):
+        s = self.screen
+        if s == STATE_ADD_SONG:
+            self._kb_widget.pedal_select()
+        elif s == STATE_SEARCH_LOCAL:
+            self._kb_widget.pedal_select()
+        elif s == STATE_RENAME:
+            self._kb_widget.pedal_select()
+        elif s == STATE_SONG_VIEW:
+            self._page_next()
+
+    def _handle_middle_triple(self):
         s = self.screen
         if s == STATE_MENU:
             [self._go_add_song, self._go_view_all, self._go_search_local, self._go_settings][self._sel_index]()
@@ -223,6 +249,16 @@ class StompApp(ctk.CTk):
     def _handle_page_next(self):
         if self.screen == STATE_SONG_VIEW:
             self._page_next()
+
+    def _handle_zoom_in(self):
+        if self.screen == STATE_SONG_VIEW:
+            self._set_zoom_level(min(5, self._zoom_level + 1))
+            self._render_song_view()
+
+    def _handle_zoom_out(self):
+        if self.screen == STATE_SONG_VIEW:
+            self._set_zoom_level(max(1, self._zoom_level - 1))
+            self._render_song_view()
 
     def _zoom_in(self):
         if self.screen != STATE_SONG_VIEW:
@@ -266,21 +302,21 @@ class StompApp(ctk.CTk):
 
     def _lines_for_zoom(self, level):
         return {
-            1: 50,
-            2: 36,
-            3: 26,
-            4: 18,
-            5: 12,
-        }.get(level, 26)
+            1: 80,
+            2: 62,
+            3: 48,
+            4: 36,
+            5: 28,
+        }.get(level, 48)
 
     def _font_for_zoom(self, level):
         return {
-            1: 10,
-            2: 12,
-            3: 14,
-            4: 16,
-            5: 18,
-        }.get(level, 14)
+            1: 12,
+            2: 14,
+            3: 16,
+            4: 18,
+            5: 20,
+        }.get(level, 16)
 
     def _set_zoom_level(self, level):
         self._zoom_level = level
@@ -417,11 +453,11 @@ class StompApp(ctk.CTk):
                      font=ctk.CTkFont(size=16), text_color="gray").pack(pady=(0, 24))
 
         ctk.CTkLabel(body,
-                     text="Use ◀ / ▶ to change the default zoom, then press middle to return.",
+                     text="Use ◀ / ▶ to change the default zoom, then press middle triple to return.",
                      font=ctk.CTkFont(size=14), text_color="#888",
                      wraplength=700, justify="left").pack(pady=(0, 8))
 
-        self._render_footer("◀ / ▶ change default zoom   |   middle = back   |   hold middle = lock")
+        self._render_footer("◀ / ▶ change default zoom   |   middle triple = back   |   hold middle = lock")
 
     # ── UG Search ─────────────────────────────────────────────────────────────
     def _search_ug(self, query):
@@ -634,9 +670,9 @@ class StompApp(ctk.CTk):
             )
             btn.pack(pady=8)
 
-        ctk.CTkLabel(f, text="◀ / ▶ navigate   |   middle = select   |   hold middle = lock",
+        ctk.CTkLabel(f, text="◀ / ▶ navigate   |   middle triple = select   |   hold middle = lock",
                      font=ctk.CTkFont(size=12), text_color="gray").pack(pady=(24, 0))
-        self._render_footer("◀ / ▶ move   |   middle = select   |   hold middle = lock")
+        self._render_footer("◀ / ▶ move   |   middle triple = select   |   hold middle = lock")
 
     def _menu_select(self, idx):
         self._sel_index = idx
@@ -661,9 +697,9 @@ class StompApp(ctk.CTk):
         hdr.pack(fill="x")
         ctk.CTkLabel(hdr, text=title, font=ctk.CTkFont(size=24, weight="bold")).pack(
             side="left", padx=20, pady=10)
-        ctk.CTkLabel(hdr, text="◀ / ▶ scroll   middle = select   |   hold middle = back",
+        ctk.CTkLabel(hdr, text="◀ / ▶ scroll   middle triple = select   |   hold middle = back",
                      font=ctk.CTkFont(size=12), text_color="gray").pack(side="right", padx=20)
-        self._render_footer("◀ / ▶ scroll   |   middle = select   |   hold middle = back")
+        self._render_footer("◀ / ▶ scroll   |   middle triple = select   |   hold middle = back")
 
         # List
         scroll = ctk.CTkScrollableFrame(self._content)
@@ -740,7 +776,7 @@ class StompApp(ctk.CTk):
         # Footer
         ftr = ctk.CTkFrame(self._content, height=40, corner_radius=0, fg_color="#111")
         ftr.pack(fill="x")
-        ctk.CTkLabel(ftr, text="◀ zoom out   ▶ zoom in   |   left+middle = prev page   right+middle = next page   |   middle = edit   |   hold middle = back to list",
+        ctk.CTkLabel(ftr, text="◀ page prev   ▶ page next   |   left+middle = zoom out   right+middle = zoom in   |   middle triple = edit   |   hold middle = back to list",
                      font=ctk.CTkFont(size=12), text_color="gray").pack(pady=8)
 
     def _render_keyboard_screen(self, prompt, on_confirm, on_cancel=None):

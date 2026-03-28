@@ -54,3 +54,13 @@ Open `Settings` from the main menu to set the default zoom level for new songs a
 
 - Songs are only saved to disk when you choose `Save` from the edit menu.
 - Global config is stored in `app/config.json`.
+
+## Preload Presets
+
+To pre-download a set of top preset songs, run:
+
+```bash
+python setup_presets.py
+```
+
+This script searches Ultimate Guitar for a small list of popular songs and saves the first matching tab for each.
